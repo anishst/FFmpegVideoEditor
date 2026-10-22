@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ app_name }}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/css/styles.css" />
+</head>
+<body class="bg-slate-50 min-h-screen text-slate-800">
+  <div class="max-w-3xl mx-auto px-4 py-10">
+    <header class="mb-8 text-center">
+      <h1 class="text-3xl font-bold text-slate-900">🎬 {{ app_name }}</h1>
+      <p class="text-slate-500 mt-2">Upload a video, pick an operation, and let FFmpeg do the work.</p>
+    </header>
+
+    <main class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 sm:p-8 space-y-6">
+      <!-- Drop zone -->
+      <div
+        id="drop-zone"
+        class="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center cursor-pointer transition hover:border-indigo-400 hover:bg-indigo-50/40"
+      >
+        <input id="file-input" type="file" accept="video/*" class="hidden" />
+        <p id="drop-zone-text" class="text-slate-500">
+          <span class="font-medium text-indigo-600">Click to browse</span> or drag & drop a video file here
+        </p>
+        <p id="file-name" class="mt-2 text-sm font-medium text-slate-700 hidden"></p>
+      </div>
+
+      <!-- Operation select -->
+      <div>
+        <label for="operation" class="block text-sm font-medium text-slate-700 mb-1">Editing operation</label>
+        <select id="operation" class="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400">
+          <option value="trim">Trim</option>
+          <option value="resize">Resize</option>
+          <option value="extract_audio">Extract Audio</option>
+          <option value="convert_format">Convert Format</option>
+          <option value="add_watermark">Add Watermark</option>
+          <option value="compress">Compress</option>
+        </select>
+      </div>
+
+      <!-- Dynamic operation params -->
+      <div id="params-container" class="space-y-4"></div>
+
+      <!-- Submit -->
+      <button
+        id="submit-btn"
+        class="w-full bg-indigo-600 text-white font-medium py-2.5 rounded-lg hover:bg-indigo-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+        disabled
+      >
+        Start Processing
+      </button>
+
+      <!-- Job status -->
+      <div id="status-panel" class="hidden border border-slate-200 rounded-xl p-5 space-y-3">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <svg id="spinner" class="animate-spin h-5 w-5 text-indigo-600 hidden" viewBox="0 0 24 24" fill="none">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+            <span id="status-text" class="font-medium">Pending</span>
+          </div>
+          <span id="progress-pct" class="text-sm text-slate-500">0%</span>
+        </div>
+        <div class="w-full bg-slate-200 rounded-full h-2.5 overflow-hidden">
+          <div id="progress-bar" class="bg-indigo-600 h-2.5 rounded-full transition-all" style="width: 0%"></div>
+        </div>
+        <p id="error-text" class="text-sm text-red-600 hidden"></p>
+        <a
+          id="download-link"
+          href="#"
+          class="hidden inline-flex items-center gap-2 bg-emerald-600 text-white font-medium px-4 py-2 rounded-lg hover:bg-emerald-700 transition"
+          download
+        >
+          ⬇ Download result
+        </a>
+      </div>
+    </main>
+
+    <footer class="text-center text-xs text-slate-400 mt-8">
+      Powered by FastAPI + FFmpeg
+    </footer>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
