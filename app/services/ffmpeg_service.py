@@ -142,6 +142,40 @@ def _find_default_font() -> str | None:
 
 _AUDIO_BITRATE_KBPS = 128
 
+_METADATA_CONTAINER_EXTENSIONS = {".mp4", ".mov", ".m4v"}
+
+
+def _metadata_args(output_path: Path) -> list[str]:
+    """Best-effort flags to retain EXIF-style metadata (creation time, GPS
+    location, camera make/model, custom tags, ...) from the first input
+    file on the output.
+
+    `-map_metadata 0` is required explicitly: FFmpeg does *not* reliably
+    carry over global metadata like `creation_time` on its own, even for a
+    plain stream copy. `use_metadata_tags` additionally tells the MOV/MP4
+    muxer to keep arbitrary/custom tags instead of silently dropping any
+    tag it doesn't specifically recognize.
+    """
+    args = ["-map_metadata", "0"]
+    if output_path.suffix.lower() in _METADATA_CONTAINER_EXTENSIONS:
+        args += ["-movflags", "use_metadata_tags"]
+    return args
+
+
+def _concat_metadata_args(output_path: Path) -> list[str]:
+    """Metadata mapping for concatenation.
+
+    The filtergraph always produces exactly one video + one audio output
+    stream (`[outv]`/`[outa]`), so it's safe to also pull per-stream
+    metadata (e.g. the `rotate` tag) from the first clip's first streams,
+    on top of the usual global-metadata handling.
+    """
+    return [
+        *_metadata_args(output_path),
+        "-map_metadata:s:v:0", "0:s:v:0",
+        "-map_metadata:s:a:0", "0:s:a:0",
+    ]
+
 
 def build_command(
     operation: OperationParams,
@@ -170,6 +204,7 @@ def build_command(
             "-ss", str(start), "-to", str(end),
             "-i", str(input_path),
             "-c", "copy",
+            *_metadata_args(output_path),
             str(output_path),
         ]]
 
@@ -178,16 +213,25 @@ def build_command(
             scale = f"{operation.width}:-2"
         else:
             scale = f"{operation.width}:{operation.height}"
-        return [[*base, "-vf", f"scale={scale}", "-c:a", "copy", str(output_path)]]
+        return [[
+            *base, "-vf", f"scale={scale}", "-c:a", "copy",
+            *_metadata_args(output_path),
+            str(output_path),
+        ]]
 
     if isinstance(operation, ExtractAudioParams):
         codec_map = {"mp3": "libmp3lame", "aac": "aac", "wav": "pcm_s16le", "flac": "flac", "ogg": "libvorbis"}
-        return [[*base, "-vn", "-acodec", codec_map[operation.audio_format], str(output_path)]]
+        return [[
+            *base, "-vn", "-acodec", codec_map[operation.audio_format],
+            *_metadata_args(output_path),
+            str(output_path),
+        ]]
 
     if isinstance(operation, ConvertFormatParams):
         if operation.target_format == "gif":
+            # GIF has no metadata container, so there is nothing to retain.
             return [[*base, "-vf", "fps=10,scale=480:-1:flags=lanczos", str(output_path)]]
-        return [[*base, str(output_path)]]
+        return [[*base, *_metadata_args(output_path), str(output_path)]]
 
     if isinstance(operation, AddWatermarkParams):
         positions = {
@@ -207,7 +251,11 @@ def build_command(
             f"fontsize={operation.font_size}:{positions[operation.position]}:"
             "box=1:boxcolor=black@0.4:boxborderw=5"
         )
-        return [[*base, "-vf", drawtext, "-codec:a", "copy", str(output_path)]]
+        return [[
+            *base, "-vf", drawtext, "-codec:a", "copy",
+            *_metadata_args(output_path),
+            str(output_path),
+        ]]
 
     if isinstance(operation, CompressParams):
         if operation.target_size_mb:
@@ -231,6 +279,7 @@ def build_command(
                 "-preset", operation.preset,
                 "-pass", "2", "-passlogfile", str(passlog_prefix),
                 "-c:a", "aac", "-b:a", f"{_AUDIO_BITRATE_KBPS}k",
+                *_metadata_args(output_path),
                 str(output_path),
             ]
             return [pass1, pass2]
@@ -241,6 +290,7 @@ def build_command(
             "-crf", str(operation.crf),
             "-preset", operation.preset,
             "-acodec", "aac",
+            *_metadata_args(output_path),
             str(output_path),
         ]]
 
@@ -270,6 +320,7 @@ def build_command(
             "-filter_complex", filter_complex,
             "-map", "[outv]", "-map", "[outa]",
             "-c:v", "libx264", "-c:a", "aac",
+            *_concat_metadata_args(output_path),
             str(output_path),
         ]]
 
