@@ -15,7 +15,13 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.models import Job
-from app.schemas import JobResponse, OperationParams, OperationType, ProcessVideoResponse
+from app.schemas import (
+    ConcatenateParams,
+    JobResponse,
+    OperationParams,
+    OperationType,
+    ProcessVideoResponse,
+)
 from app.services.job_service import create_job, process_job
 
 logger = logging.getLogger(__name__)
@@ -55,43 +61,69 @@ def _validate_upload(file: UploadFile) -> str:
     return suffix
 
 
-@router.post("/process-video", response_model=ProcessVideoResponse)
-async def process_video(
-    background_tasks: BackgroundTasks,
-    db: Annotated[Session, Depends(get_db)],
-    file: Annotated[UploadFile, File(description="Source video file")],
-    operation: Annotated[OperationType, Form(description="Editing operation to perform")],
-    params: Annotated[str, Form(description="JSON object of operation-specific parameters")] = "{}",
-) -> ProcessVideoResponse:
-    suffix = _validate_upload(file)
-    operation_params = _validate_operation(operation.value, params)
-
-    job_id = str(uuid.uuid4())
-    input_path = settings.upload_dir / f"{job_id}{suffix}"
-
+async def _save_upload(file: UploadFile, destination: Path) -> int:
     size = 0
     try:
-        with input_path.open("wb") as out_file:
+        with destination.open("wb") as out_file:
             while chunk := await file.read(1024 * 1024):
                 size += len(chunk)
                 if size > settings.max_upload_size:
                     raise HTTPException(status_code=413, detail="Uploaded file is too large")
                 out_file.write(chunk)
     except HTTPException:
-        input_path.unlink(missing_ok=True)
+        destination.unlink(missing_ok=True)
         raise
     finally:
         await file.close()
 
     if size == 0:
-        input_path.unlink(missing_ok=True)
+        destination.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    return size
+
+
+@router.post("/process-video", response_model=ProcessVideoResponse)
+async def process_video(
+    background_tasks: BackgroundTasks,
+    db: Annotated[Session, Depends(get_db)],
+    operation: Annotated[OperationType, Form(description="Editing operation to perform")],
+    files: Annotated[
+        list[UploadFile], File(description="Source video file(s). Provide 2+ to concatenate.")
+    ],
+    params: Annotated[str, Form(description="JSON object of operation-specific parameters")] = "{}",
+) -> ProcessVideoResponse:
+    operation_params = _validate_operation(operation.value, params)
+
+    is_concat = isinstance(operation_params, ConcatenateParams)
+    if is_concat and len(files) < 2:
+        raise HTTPException(status_code=422, detail="Concatenate requires at least 2 files")
+    if not is_concat and len(files) != 1:
+        raise HTTPException(
+            status_code=422,
+            detail="Exactly one file is required for this operation (use 'concatenate' for multiple)",
+        )
+
+    job_id = str(uuid.uuid4())
+    saved_paths: list[Path] = []
+    saved_filenames: list[str] = []
+    try:
+        for index, upload in enumerate(files):
+            suffix = _validate_upload(upload)
+            destination = settings.upload_dir / f"{job_id}_{index}{suffix}"
+            await _save_upload(upload, destination)
+            saved_paths.append(destination)
+            saved_filenames.append(upload.filename or destination.name)
+    except HTTPException:
+        for path in saved_paths:
+            path.unlink(missing_ok=True)
+        raise
 
     job = create_job(
         db,
+        job_id=job_id,
         operation=operation_params,
-        input_filename=file.filename or input_path.name,
-        input_path=input_path,
+        input_filenames=saved_filenames,
+        input_paths=saved_paths,
     )
 
     background_tasks.add_task(process_job, job.id, operation_params)
@@ -108,6 +140,7 @@ def _job_to_response(job: Job) -> JobResponse:
         progress=job.progress,
         error_message=job.error_message,
         download_url=download_url,
+        input_filenames=job.get_input_filenames(),
         created_at=job.created_at,
         updated_at=job.updated_at,
     )
@@ -135,8 +168,10 @@ async def download_file(filename: str, db: Annotated[Session, Depends(get_db)]) 
     if not output_path.exists():
         raise HTTPException(status_code=404, detail="File no longer available")
 
+    input_filenames = job.get_input_filenames()
+    base_name = Path(input_filenames[0]).stem if input_filenames else "output"
     return FileResponse(
         path=output_path,
-        filename=f"{Path(job.input_filename).stem}_{job.operation}{output_path.suffix}",
+        filename=f"{base_name}_{job.operation}{output_path.suffix}",
         media_type="application/octet-stream",
     )

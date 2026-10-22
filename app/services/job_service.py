@@ -1,6 +1,7 @@
 """Orchestrates video-processing jobs: DB bookkeeping + FFmpeg execution."""
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -9,12 +10,13 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import SessionLocal
 from app.models import Job
-from app.schemas import JobStatus, OperationParams
+from app.schemas import ConcatenateParams, JobStatus, OperationParams
 from app.services.ffmpeg_service import (
     FFmpegError,
     build_command,
     output_extension,
     probe_duration,
+    probe_resolution,
     run_ffmpeg,
 )
 
@@ -24,17 +26,19 @@ logger = logging.getLogger(__name__)
 def create_job(
     db: Session,
     *,
+    job_id: str,
     operation: OperationParams,
-    input_filename: str,
-    input_path: Path,
+    input_filenames: list[str],
+    input_paths: list[Path],
 ) -> Job:
     job = Job(
+        id=job_id,
         operation=operation.operation.value,
         params=operation.model_dump_json(),
         status=JobStatus.PENDING.value,
         progress=0.0,
-        input_filename=input_filename,
-        input_path=str(input_path),
+        input_filenames=json.dumps(input_filenames),
+        input_paths=json.dumps([str(p) for p in input_paths]),
     )
     db.add(job)
     db.commit()
@@ -70,23 +74,44 @@ async def process_job(job_id: str, operation: OperationParams) -> None:
         job.progress = 0.0
         db.commit()
 
-        input_path = Path(job.input_path)
-        extension = output_extension(operation, input_path.suffix)
+        input_paths = [Path(p) for p in job.get_input_paths()]
+        extension = output_extension(operation, input_paths[0].suffix)
         output_path = settings.output_dir / f"{job_id}{extension}"
     finally:
         db.close()
 
+    passlog_prefix = settings.output_dir / f"{job_id}_2pass"
     try:
-        if not input_path.exists():
-            raise FFmpegError("Uploaded source file is missing or was already cleaned up.")
+        missing = [p for p in input_paths if not p.exists()]
+        if missing:
+            raise FFmpegError("One or more source files are missing or were already cleaned up.")
 
-        duration = await probe_duration(input_path)
-        command = build_command(operation, input_path, output_path)
+        # For concatenation, report progress against the combined duration of
+        # all clips and scale every clip to the first clip's resolution.
+        if isinstance(operation, ConcatenateParams):
+            duration = 0.0
+            for path in input_paths:
+                duration += await probe_duration(path)
+            resolution = await probe_resolution(input_paths[0])
+        else:
+            duration = await probe_duration(input_paths[0])
+            resolution = None
+
+        commands = build_command(
+            operation,
+            input_paths,
+            output_path,
+            duration=duration,
+            resolution=resolution,
+            passlog_prefix=passlog_prefix,
+        )
 
         async def on_progress(pct: float) -> None:
             await _report_progress(job_id, pct)
 
-        await run_ffmpeg(command, duration, on_progress=on_progress)
+        for i, command in enumerate(commands):
+            is_last = i == len(commands) - 1
+            await run_ffmpeg(command, duration, on_progress=on_progress if is_last else None)
 
         db = SessionLocal()
         try:
@@ -113,3 +138,6 @@ async def process_job(job_id: str, operation: OperationParams) -> None:
             db.close()
         if output_path.exists():
             output_path.unlink(missing_ok=True)
+    finally:
+        for logfile in passlog_prefix.parent.glob(f"{passlog_prefix.name}*"):
+            logfile.unlink(missing_ok=True)

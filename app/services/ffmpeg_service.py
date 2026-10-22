@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import platform
 import re
 import shlex
@@ -19,6 +20,7 @@ from app.config import settings
 from app.schemas import (
     AddWatermarkParams,
     CompressParams,
+    ConcatenateParams,
     ConvertFormatParams,
     ExtractAudioParams,
     OperationParams,
@@ -72,6 +74,36 @@ async def probe_duration(input_path: Path) -> float:
         return 0.0
 
 
+async def probe_resolution(input_path: Path) -> tuple[int, int]:
+    """Return the (width, height) of the first video stream using ffprobe."""
+    cmd = [
+        settings.ffprobe_binary,
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height",
+        "-of", "csv=p=0",
+        str(input_path),
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+    except FileNotFoundError as exc:
+        raise FFmpegError(
+            f"ffprobe binary not found ('{settings.ffprobe_binary}'). Is FFmpeg installed and on PATH?"
+        ) from exc
+
+    if proc.returncode != 0:
+        raise FFmpegError(f"ffprobe failed to read input file: {stderr.decode(errors='ignore').strip()}")
+
+    try:
+        width_str, height_str = stdout.decode().strip().split(",")[:2]
+        return int(width_str), int(height_str)
+    except (ValueError, IndexError) as exc:
+        raise FFmpegError("Could not determine video resolution") from exc
+
+
 def _build_output_path(output_dir: Path, job_id: str, extension: str) -> Path:
     return output_dir / f"{job_id}{extension}"
 
@@ -108,10 +140,24 @@ def _find_default_font() -> str | None:
     return None
 
 
+_AUDIO_BITRATE_KBPS = 128
+
+
 def build_command(
-    operation: OperationParams, input_path: Path, output_path: Path
-) -> list[str]:
-    """Build the FFmpeg argv list for the requested operation."""
+    operation: OperationParams,
+    input_paths: list[Path],
+    output_path: Path,
+    *,
+    duration: float = 0.0,
+    resolution: tuple[int, int] | None = None,
+    passlog_prefix: Path | None = None,
+) -> list[list[str]]:
+    """Build the FFmpeg argv list(s) for the requested operation.
+
+    Returns a list of commands to run *in order* (most operations need
+    only one pass; size-targeted compression needs two).
+    """
+    input_path = input_paths[0]
     base = [settings.ffmpeg_binary, "-y", "-i", str(input_path)]
 
     if isinstance(operation, TrimParams):
@@ -119,29 +165,29 @@ def build_command(
         end = _timestamp_to_seconds(operation.end_time)
         if end <= start:
             raise FFmpegError("end_time must be greater than start_time")
-        return [
+        return [[
             settings.ffmpeg_binary, "-y",
             "-ss", str(start), "-to", str(end),
             "-i", str(input_path),
             "-c", "copy",
             str(output_path),
-        ]
+        ]]
 
     if isinstance(operation, ResizeParams):
         if operation.maintain_aspect_ratio:
             scale = f"{operation.width}:-2"
         else:
             scale = f"{operation.width}:{operation.height}"
-        return [*base, "-vf", f"scale={scale}", "-c:a", "copy", str(output_path)]
+        return [[*base, "-vf", f"scale={scale}", "-c:a", "copy", str(output_path)]]
 
     if isinstance(operation, ExtractAudioParams):
         codec_map = {"mp3": "libmp3lame", "aac": "aac", "wav": "pcm_s16le", "flac": "flac", "ogg": "libvorbis"}
-        return [*base, "-vn", "-acodec", codec_map[operation.audio_format], str(output_path)]
+        return [[*base, "-vn", "-acodec", codec_map[operation.audio_format], str(output_path)]]
 
     if isinstance(operation, ConvertFormatParams):
         if operation.target_format == "gif":
-            return [*base, "-vf", "fps=10,scale=480:-1:flags=lanczos", str(output_path)]
-        return [*base, str(output_path)]
+            return [[*base, "-vf", "fps=10,scale=480:-1:flags=lanczos", str(output_path)]]
+        return [[*base, str(output_path)]]
 
     if isinstance(operation, AddWatermarkParams):
         positions = {
@@ -161,17 +207,71 @@ def build_command(
             f"fontsize={operation.font_size}:{positions[operation.position]}:"
             "box=1:boxcolor=black@0.4:boxborderw=5"
         )
-        return [*base, "-vf", drawtext, "-codec:a", "copy", str(output_path)]
+        return [[*base, "-vf", drawtext, "-codec:a", "copy", str(output_path)]]
 
     if isinstance(operation, CompressParams):
-        return [
+        if operation.target_size_mb:
+            if duration <= 0:
+                raise FFmpegError("Could not determine input duration; cannot target an output size")
+            total_kbits = operation.target_size_mb * 8 * 1024
+            video_kbps = max(50.0, (total_kbits / duration) - _AUDIO_BITRATE_KBPS)
+            if passlog_prefix is None:
+                raise FFmpegError("Missing two-pass log prefix for size-targeted compression")
+            null_sink = os.devnull
+            pass1 = [
+                settings.ffmpeg_binary, "-y", "-i", str(input_path),
+                "-c:v", "libx264", "-b:v", f"{video_kbps:.0f}k",
+                "-preset", operation.preset,
+                "-pass", "1", "-passlogfile", str(passlog_prefix),
+                "-an", "-f", "mp4", null_sink,
+            ]
+            pass2 = [
+                settings.ffmpeg_binary, "-y", "-i", str(input_path),
+                "-c:v", "libx264", "-b:v", f"{video_kbps:.0f}k",
+                "-preset", operation.preset,
+                "-pass", "2", "-passlogfile", str(passlog_prefix),
+                "-c:a", "aac", "-b:a", f"{_AUDIO_BITRATE_KBPS}k",
+                str(output_path),
+            ]
+            return [pass1, pass2]
+
+        return [[
             *base,
             "-vcodec", "libx264",
             "-crf", str(operation.crf),
             "-preset", operation.preset,
             "-acodec", "aac",
             str(output_path),
-        ]
+        ]]
+
+    if isinstance(operation, ConcatenateParams):
+        if len(input_paths) < 2:
+            raise FFmpegError("Concatenation requires at least 2 input files")
+        width, height = resolution or (1280, 720)
+
+        inputs_args: list[str] = []
+        scale_filters: list[str] = []
+        concat_refs: list[str] = []
+        for idx, path in enumerate(input_paths):
+            inputs_args += ["-i", str(path)]
+            scale_filters.append(
+                f"[{idx}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1[v{idx}]"
+            )
+            concat_refs.append(f"[v{idx}][{idx}:a]")
+
+        filter_complex = ";".join(scale_filters)
+        filter_complex += ";" + "".join(concat_refs)
+        filter_complex += f"concat=n={len(input_paths)}:v=1:a=1[outv][outa]"
+
+        return [[
+            settings.ffmpeg_binary, "-y",
+            *inputs_args,
+            "-filter_complex", filter_complex,
+            "-map", "[outv]", "-map", "[outa]",
+            "-c:v", "libx264", "-c:a", "aac",
+            str(output_path),
+        ]]
 
     raise FFmpegError(f"Unsupported operation: {operation!r}")
 
@@ -181,6 +281,8 @@ def output_extension(operation: OperationParams, original_extension: str) -> str
         return f".{operation.audio_format}"
     if isinstance(operation, ConvertFormatParams):
         return f".{operation.target_format}"
+    if isinstance(operation, ConcatenateParams):
+        return f".{operation.output_format}"
     return original_extension
 
 

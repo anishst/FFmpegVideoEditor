@@ -22,6 +22,7 @@ class OperationType(str, enum.Enum):
     CONVERT_FORMAT = "convert_format"
     ADD_WATERMARK = "add_watermark"
     COMPRESS = "compress"
+    CONCATENATE = "concatenate"
 
 
 _TIMESTAMP_PATTERN = r"^\d{1,2}(:\d{2}){0,2}(\.\d{1,3})?$"
@@ -76,6 +77,20 @@ class CompressParams(BaseModel):
         "ultrafast", "superfast", "veryfast", "faster", "fast",
         "medium", "slow", "slower", "veryslow",
     ] = "medium"
+    target_size_mb: float | None = Field(
+        None,
+        gt=0,
+        le=100_000,
+        description=(
+            "If set, ignores crf and uses two-pass encoding to hit this "
+            "approximate output size (in megabytes) instead."
+        ),
+    )
+
+
+class ConcatenateParams(BaseModel):
+    operation: Literal[OperationType.CONCATENATE] = OperationType.CONCATENATE
+    output_format: Literal["mp4", "mkv", "webm", "mov"] = "mp4"
 
 
 OperationParams = Annotated[
@@ -86,6 +101,7 @@ OperationParams = Annotated[
         ConvertFormatParams,
         AddWatermarkParams,
         CompressParams,
+        ConcatenateParams,
     ],
     Field(discriminator="operation"),
 ]
@@ -103,6 +119,7 @@ class JobResponse(BaseModel):
     progress: float
     error_message: str | None = None
     download_url: str | None = None
+    input_filenames: list[str] = []
     created_at: datetime
     updated_at: datetime
 

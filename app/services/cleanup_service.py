@@ -35,7 +35,8 @@ def cleanup_expired_jobs() -> int:
     try:
         expired_jobs = db.query(Job).filter(Job.updated_at < cutoff).all()
         for job in expired_jobs:
-            _unlink_quietly(job.input_path)
+            for input_path in job.get_input_paths():
+                _unlink_quietly(input_path)
             _unlink_quietly(job.output_path)
             db.delete(job)
             removed += 1

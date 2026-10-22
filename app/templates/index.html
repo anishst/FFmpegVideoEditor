@@ -22,10 +22,15 @@
       >
         <input id="file-input" type="file" accept="video/*" class="hidden" />
         <p id="drop-zone-text" class="text-slate-500">
-          <span class="font-medium text-indigo-600">Click to browse</span> or drag & drop a video file here
+          <span class="font-medium text-indigo-600">Click to browse</span> or drag & drop video file(s) here
         </p>
-        <p id="file-name" class="mt-2 text-sm font-medium text-slate-700 hidden"></p>
+        <p id="multi-hint" class="mt-1 text-xs text-indigo-500 hidden">
+          Concatenate mode: select 2+ files, in the order you want them joined.
+        </p>
       </div>
+
+      <!-- Selected files list -->
+      <ul id="file-list" class="hidden divide-y divide-slate-200 border border-slate-200 rounded-xl overflow-hidden"></ul>
 
       <!-- Operation select -->
       <div>
@@ -37,6 +42,7 @@
           <option value="convert_format">Convert Format</option>
           <option value="add_watermark">Add Watermark</option>
           <option value="compress">Compress</option>
+          <option value="concatenate">Concatenate (join multiple files)</option>
         </select>
       </div>
 

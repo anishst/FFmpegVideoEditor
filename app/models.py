@@ -1,6 +1,7 @@
 """SQLAlchemy ORM models."""
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -28,8 +29,10 @@ class Job(Base):
     progress: Mapped[float] = mapped_column(Float, default=0.0)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    input_filename: Mapped[str] = mapped_column(String(512))
-    input_path: Mapped[str] = mapped_column(String(1024))
+    # JSON-encoded lists so a job can carry one (most operations) or many
+    # (concatenate) source files.
+    input_filenames: Mapped[str] = mapped_column(Text, default="[]")
+    input_paths: Mapped[str] = mapped_column(Text, default="[]")
     output_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
     output_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
@@ -37,3 +40,9 @@ class Job(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+
+    def get_input_filenames(self) -> list[str]:
+        return json.loads(self.input_filenames)
+
+    def get_input_paths(self) -> list[str]:
+        return json.loads(self.input_paths)

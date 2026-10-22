@@ -23,15 +23,23 @@ const OPERATION_FIELDS = {
     { name: "font_color", label: "Font color", type: "text", placeholder: "white", default: "white" },
   ],
   compress: [
-    { name: "crf", label: "Quality (CRF, lower = better)", type: "number", default: 28, min: 0, max: 51 },
+    { name: "crf", label: "Quality (CRF, lower = better; ignored if target size is set)", type: "number", default: 28, min: 0, max: 51 },
     { name: "preset", label: "Encoding preset", type: "select", options: ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"], default: "medium" },
+    { name: "target_size_mb", label: "Target output size (MB, optional)", type: "number", placeholder: "e.g. 25", default: "", min: 1, optional: true },
+  ],
+  concatenate: [
+    { name: "output_format", label: "Output format", type: "select", options: ["mp4", "mkv", "webm", "mov"], default: "mp4" },
   ],
 };
 
+// Operations that accept (and require) more than one input file.
+const MULTI_FILE_OPERATIONS = new Set(["concatenate"]);
+
 const dropZone = document.getElementById("drop-zone");
 const dropZoneText = document.getElementById("drop-zone-text");
+const multiHint = document.getElementById("multi-hint");
 const fileInput = document.getElementById("file-input");
-const fileNameEl = document.getElementById("file-name");
+const fileListEl = document.getElementById("file-list");
 const operationSelect = document.getElementById("operation");
 const paramsContainer = document.getElementById("params-container");
 const submitBtn = document.getElementById("submit-btn");
@@ -44,8 +52,12 @@ const progressBar = document.getElementById("progress-bar");
 const errorText = document.getElementById("error-text");
 const downloadLink = document.getElementById("download-link");
 
-let selectedFile = null;
+let selectedFiles = [];
 let pollHandle = null;
+
+function isMultiFileOperation() {
+  return MULTI_FILE_OPERATIONS.has(operationSelect.value);
+}
 
 function renderParamFields(operation) {
   paramsContainer.innerHTML = "";
@@ -89,28 +101,83 @@ function collectParams(operation) {
   for (const field of fields) {
     const el = document.getElementById(`param-${field.name}`);
     if (!el) continue;
-    if (field.type === "checkbox") params[field.name] = el.checked;
-    else if (field.type === "number") params[field.name] = Number(el.value);
-    else params[field.name] = el.value;
+    if (field.type === "checkbox") {
+      params[field.name] = el.checked;
+    } else if (field.type === "number") {
+      if (field.optional && el.value.trim() === "") continue; // omit optional empty numbers
+      params[field.name] = Number(el.value);
+    } else {
+      params[field.name] = el.value;
+    }
   }
   return params;
 }
 
-function updateSubmitState() {
-  submitBtn.disabled = !selectedFile;
+function renderFileList() {
+  fileListEl.innerHTML = "";
+  if (selectedFiles.length === 0) {
+    fileListEl.classList.add("hidden");
+    dropZoneText.classList.remove("hidden");
+    return;
+  }
+  fileListEl.classList.remove("hidden");
+  dropZoneText.classList.add("hidden");
+
+  selectedFiles.forEach((file, index) => {
+    const li = document.createElement("li");
+    li.className = "flex items-center justify-between gap-3 px-4 py-2 bg-white text-sm";
+    li.innerHTML = `
+      <span class="flex items-center gap-2 min-w-0">
+        <span class="shrink-0 inline-flex items-center justify-center h-5 w-5 rounded-full bg-indigo-100 text-indigo-700 text-xs font-semibold">${index + 1}</span>
+        <span class="truncate text-slate-700">${file.name}</span>
+        <span class="shrink-0 text-slate-400">(${(file.size / (1024 * 1024)).toFixed(2)} MB)</span>
+      </span>
+      <button type="button" data-index="${index}" class="remove-file-btn text-slate-400 hover:text-red-600 shrink-0" title="Remove">✕</button>
+    `;
+    fileListEl.appendChild(li);
+  });
+
+  fileListEl.querySelectorAll(".remove-file-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const idx = Number(btn.dataset.index);
+      selectedFiles.splice(idx, 1);
+      renderFileList();
+      updateSubmitState();
+    });
+  });
 }
 
-function handleFileSelected(file) {
-  selectedFile = file;
-  fileNameEl.textContent = `Selected: ${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`;
-  fileNameEl.classList.remove("hidden");
-  dropZoneText.classList.add("hidden");
+function updateSubmitState() {
+  const needsMultiple = isMultiFileOperation();
+  submitBtn.disabled = needsMultiple ? selectedFiles.length < 2 : selectedFiles.length !== 1;
+}
+
+function addFiles(fileArray) {
+  if (isMultiFileOperation()) {
+    selectedFiles = [...selectedFiles, ...fileArray];
+  } else {
+    selectedFiles = fileArray.slice(0, 1);
+  }
+  renderFileList();
+  updateSubmitState();
+}
+
+function applyOperationFileMode() {
+  const multi = isMultiFileOperation();
+  fileInput.multiple = multi;
+  multiHint.classList.toggle("hidden", !multi);
+  if (!multi && selectedFiles.length > 1) {
+    selectedFiles = selectedFiles.slice(0, 1);
+    renderFileList();
+  }
   updateSubmitState();
 }
 
 dropZone.addEventListener("click", () => fileInput.click());
 fileInput.addEventListener("change", () => {
-  if (fileInput.files.length > 0) handleFileSelected(fileInput.files[0]);
+  if (fileInput.files.length > 0) addFiles(Array.from(fileInput.files));
+  fileInput.value = ""; // allow re-selecting the same file(s) later
 });
 
 ["dragenter", "dragover"].forEach((evt) =>
@@ -126,12 +193,15 @@ fileInput.addEventListener("change", () => {
   })
 );
 dropZone.addEventListener("drop", (e) => {
-  const file = e.dataTransfer.files[0];
-  if (file) handleFileSelected(file);
+  if (e.dataTransfer.files.length > 0) addFiles(Array.from(e.dataTransfer.files));
 });
 
-operationSelect.addEventListener("change", () => renderParamFields(operationSelect.value));
+operationSelect.addEventListener("change", () => {
+  renderParamFields(operationSelect.value);
+  applyOperationFileMode();
+});
 renderParamFields(operationSelect.value);
+applyOperationFileMode();
 
 function resetStatusPanel() {
   statusPanel.classList.remove("hidden");
@@ -198,13 +268,14 @@ async function pollJob(jobId) {
 }
 
 submitBtn.addEventListener("click", async () => {
-  if (!selectedFile) return;
+  const needsMultiple = isMultiFileOperation();
+  if (needsMultiple ? selectedFiles.length < 2 : selectedFiles.length !== 1) return;
 
   const operation = operationSelect.value;
   const params = collectParams(operation);
 
   const formData = new FormData();
-  formData.append("file", selectedFile);
+  for (const file of selectedFiles) formData.append("files", file);
   formData.append("operation", operation);
   formData.append("params", JSON.stringify(params));
 

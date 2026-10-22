@@ -5,7 +5,8 @@ A production-ready FastAPI application that uses FFmpeg to edit videos asynchron
 ## Features
 
 - **Web UI** (served by FastAPI + Jinja2 + Tailwind CSS + vanilla JS): drag-and-drop upload, operation picker, dynamic parameter forms, live progress bar, and a download button once a job completes.
-- **Editing operations**: Trim, Resize, Extract Audio, Convert Format, Add Watermark, Compress.
+- **Editing operations**: Trim, Resize, Extract Audio, Convert Format, Add Watermark, Compress (optionally to a target output size), Concatenate (join 2+ uploaded files in order).
+- **Multi-file upload**: drag & drop (or select) multiple files for concatenation, in upload order, with a removable file list in the UI.
 - **Asynchronous processing**: uploads return immediately with a `job_id`; FFmpeg runs in the background via `BackgroundTasks` and `asyncio.subprocess`, so the event loop is never blocked.
 - **Persistent job tracking**: job state/progress/errors are stored in SQLite via SQLAlchemy, so status survives across requests.
 - **Strict validation**: Pydantic models validate operation parameters (discriminated union keyed on `operation`).
@@ -112,9 +113,11 @@ Interactive API docs (Swagger UI) are available at **http://localhost:8000/docs*
 | Method | Path                     | Description                                                             |
 |--------|--------------------------|---------------------------------------------------------------------------|
 | GET    | `/`                      | Serves the web dashboard.                                                 |
-| POST   | `/process-video`         | Multipart form upload: `file`, `operation`, `params` (JSON string). Returns `{job_id, status}`. |
+| POST   | `/process-video`         | Multipart form upload: one or more `files`, `operation`, `params` (JSON string). Returns `{job_id, status}`. |
 | GET    | `/jobs/{job_id}`         | Returns job status, progress %, error message, and download URL.          |
 | GET    | `/download/{filename}`   | Downloads a completed job's output file.                                  |
+
+`files` accepts multiple entries with the same field name. Every operation except `concatenate` requires exactly **one** file; `concatenate` requires **two or more**, processed in the order they're uploaded.
 
 ### Operations & parameters
 
@@ -125,14 +128,32 @@ Interactive API docs (Swagger UI) are available at **http://localhost:8000/docs*
 | `extract_audio`     | `audio_format` (`mp3`, `aac`, `wav`, `flac`, `ogg`)                            |
 | `convert_format`    | `target_format` (`mp4`, `mkv`, `avi`, `webm`, `mov`, `gif`)                     |
 | `add_watermark`     | `text`, `position` (`top_left`/`top_right`/`bottom_left`/`bottom_right`/`center`), `font_size`, `font_color` |
-| `compress`          | `crf` (0–51, lower = higher quality), `preset` (`ultrafast` … `veryslow`)       |
+| `compress`          | `crf` (0–51, lower = higher quality), `preset` (`ultrafast` … `veryslow`), optional `target_size_mb` |
+| `concatenate`       | `output_format` (`mp4`, `mkv`, `webm`, `mov`); requires 2+ files              |
+
+For `compress`, if `target_size_mb` is set, `crf` is ignored and the app runs a **two-pass** x264 encode with a bitrate calculated to hit that approximate file size; otherwise it does a single CRF-based pass.
+
+For `concatenate`, every input is scaled/letterboxed to match the first file's resolution and re-encoded (via `filter_complex concat`), so files with different resolutions, codecs, or aspect ratios can still be joined. Each input must contain both video and audio streams.
 
 Example using `curl`:
 ```bash
+# Trim a single file
 curl -X POST http://localhost:8000/process-video \
-  -F "file=@my_video.mp4" \
+  -F "files=@my_video.mp4" \
   -F "operation=trim" \
   -F 'params={"start_time":"00:00:05","end_time":"00:00:15"}'
+
+# Concatenate multiple files (order = upload order)
+curl -X POST http://localhost:8000/process-video \
+  -F "files=@clip1.mp4" -F "files=@clip2.mp4" -F "files=@clip3.mp4" \
+  -F "operation=concatenate" \
+  -F 'params={"output_format":"mp4"}'
+
+# Compress to a target file size instead of a CRF value
+curl -X POST http://localhost:8000/process-video \
+  -F "files=@my_video.mp4" \
+  -F "operation=compress" \
+  -F 'params={"target_size_mb":25}'
 ```
 
 ## Configuration
