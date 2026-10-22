@@ -91,6 +91,11 @@ class CompressParams(BaseModel):
 class ConcatenateParams(BaseModel):
     operation: Literal[OperationType.CONCATENATE] = OperationType.CONCATENATE
     output_format: Literal["mp4", "mkv", "webm", "mov"] = "mp4"
+    crf: int = Field(23, ge=0, le=51, description="Constant Rate Factor; lower = better quality/larger file")
+    preset: Literal[
+        "ultrafast", "superfast", "veryfast", "faster", "fast",
+        "medium", "slow", "slower", "veryslow",
+    ] = "medium"
 
 
 OperationParams = Annotated[

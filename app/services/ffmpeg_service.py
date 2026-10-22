@@ -319,7 +319,8 @@ def build_command(
             *inputs_args,
             "-filter_complex", filter_complex,
             "-map", "[outv]", "-map", "[outa]",
-            "-c:v", "libx264", "-c:a", "aac",
+            "-c:v", "libx264", "-crf", str(operation.crf), "-preset", operation.preset,
+            "-c:a", "aac",
             *_concat_metadata_args(output_path),
             str(output_path),
         ]]

@@ -129,7 +129,7 @@ Interactive API docs (Swagger UI) are available at **http://localhost:8000/docs*
 | `convert_format`    | `target_format` (`mp4`, `mkv`, `avi`, `webm`, `mov`, `gif`)                     |
 | `add_watermark`     | `text`, `position` (`top_left`/`top_right`/`bottom_left`/`bottom_right`/`center`), `font_size`, `font_color` |
 | `compress`          | `crf` (0–51, lower = higher quality), `preset` (`ultrafast` … `veryslow`), optional `target_size_mb` |
-| `concatenate`       | `output_format` (`mp4`, `mkv`, `webm`, `mov`); requires 2+ files              |
+| `concatenate`       | `output_format` (`mp4`, `mkv`, `webm`, `mov`), `crf` (0–51, lower = higher quality), `preset` (`ultrafast` … `veryslow`); requires 2+ files |
 
 For `compress`, if `target_size_mb` is set, `crf` is ignored and the app runs a **two-pass** x264 encode with a bitrate calculated to hit that approximate file size; otherwise it does a single CRF-based pass.
 

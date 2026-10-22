@@ -29,6 +29,8 @@ const OPERATION_FIELDS = {
   ],
   concatenate: [
     { name: "output_format", label: "Output format", type: "select", options: ["mp4", "mkv", "webm", "mov"], default: "mp4" },
+    { name: "crf", label: "Quality (CRF, lower = better)", type: "number", default: 23, min: 0, max: 51 },
+    { name: "preset", label: "Encoding preset", type: "select", options: ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"], default: "medium" },
   ],
 };
 
